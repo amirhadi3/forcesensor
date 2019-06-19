@@ -1,0 +1,5 @@
+<launch>
+	<node pkg="optiforce" type="optiforce.py" name="sensor_obj1" output="screen">
+		<param name="sensor_num" value="1" type="int"/>
+	</node>
+</launch>
