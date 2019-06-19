@@ -1,16 +1,12 @@
 #! /usr/bin/env python
 
 import rospy
-from forcesensor.msg import SensorOutput
-from forcesensor.msg import UserCommand
-from forcesensor.msg import ByteMsg
-from serial_port_wrapper import Serial_Device
-from forcesensor import Sensor
-from PySide2.QtWidgets import (QApplication, QLabel, QPushButton, QVBoxLayout, QWidget, QRadioButton)
-from PySide2.QtCore import Slot, Qt
-from PySide2.QtGui import QPainter, QColor
-from pyqtgraph.widgets.MatplotlibWidget import MatplotlibWidget
+from PyQt5.QtWidgets import (QApplication, QLabel, QPushButton, QVBoxLayout, QWidget, QRadioButton, QVBoxLayout)
+#from PyQt5.QtCore import Slot, Qt
+from PyQt5.QtGui import QPainter, QColor
 import numpy as np
+from pyqtgraph.widgets.MatplotlibWidget import MatplotlibWidget
+from random import randint
 
 class  gui(QWidget):
 	def __init__(self, sensor, app):
@@ -79,24 +75,24 @@ class  gui(QWidget):
 		self.acc2 = 4
 		self.window.setLayout(self.layout)
 		self.window.show()
-
+		
 	def paintEvent(self, e):
 		self.qp = QPainter()
 		self.qp.begin(self)
 	def start_data_transfer_wrapper(self):
-		self.sensor.start_data_transfer(self.num)
+		print('start data transfer')
 	def stop_data_transfer_wrapper(self):
-		self.sensor.stop_data_transfer(self.num)
+		print('stop data transfer')
 	def measure_wrapper(self):
-		self.measurement = self.sensor.measure(self.num)
+		print('measure')
 	def reset_wrapper(self):
-		self.sensor.reset(self.num)
+		print('reset device')
 	def reset_transducer_wrapper(self):
-		self.sensor.reset_transducer(self.transducer_num, self.num)
+		print('reset transducer' + str(self.transducer_num))
 	def reset_imu_wrapper(self):
-		self.sensor.reset_imu(self.num)
+		print('reset imu')
 	def reset_dac_wrapper(self):
-		self.sensor.reset_dac(self.num)
+		print('reset dac')
 	def device_num_selector_callback(self):
 		if self.device_num_selector.isChecked():
 			self.num = 1
@@ -104,15 +100,15 @@ class  gui(QWidget):
 			self.num = 0
 	def data_subscriber(self, msg):
 		if msg.sensor_num == 0:
-			self.diff_data1.append(msg.differentials)
-			self.sum_data1.append(msg.sum)
-			self.imu_data1.append(msg.imu)
-			self.acc1 = msg.accuracy
+			self.diff_data1.append(randint(size=(6,1,1)))
+			self.sum_data1.append(randint(size=(6,1,1)))
+			self.imu_data1.append(randint(size=(3,1,1)))
+			self.acc1 = randint(low=0, high=3)
 		elif msg.sensor_num == 1:
-			self.diff_data2.append(msg.differentials)
-			self.sum_data2.append(msg.sum)
-			self.imu_data2.append(msg.imu)
-			self.acc2 = msg.accuracy
+			self.diff_data2.append(randint(size=(6,1,1)))
+			self.sum_data2.append(randint(size=(6,1,1)))
+			self.imu_data2.append(randint(size=(3,1,1)))
+			self.acc2 = randint(low=0, high=3)
 
 	def drawRectangle(self):
 		color = QColor(0,0,0)
@@ -126,8 +122,10 @@ class  gui(QWidget):
 		self.qp.drawRect(60,15,50,50)
 
 if __name__ == "__main__":
-	rospy.init_node('force_sensor_gui')
+	#rospy.init_node('force_sensor_gui')
 
-	sensor = Sensor(num_sensors=2)
+	#sensor = Sensor(num_sensors=2)
+	sensor = 3
 	app = QApplication([])
 	GUI = gui(sensor, app)
+	app.exec_()
