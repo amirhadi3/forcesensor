@@ -2,18 +2,16 @@
 
 import rospy
 import ftd2xx
-from optiforce.msg import SensorOutput
-from optiforce.msg import UserCommand
+from forcesensor.msg import SensorOutput
+from forcesensor.msg import UserCommand
+from forcesensor.msg import ByteMsg
+from forcesensor.msg import FlagMsg
 from std_msgs.msg import Int32
 from std_msgs.msg import Bool
 
 class Serial_Device:
-	def __init__(self, port=0, sensor_num=1):
-		##Start serial port wrapper to take care of communication to sensor
-		uuid = roslaunch.rlutil.get_or_generate_uuid(None, False)
-		roslaunch.configure_logging(uuid)
-		launch = roslaunch.parent.ROSLaunchParent(uuid, ["C:/Users/dgblack.stu/Documents/catkin_ws/src/optiforce/launch/serial_port_wrapper.launch"])
-		launch.start()
+
+	def __init__(self, port=0, sensor_num=0):
 
 		self.port_num = port
 		self.baud = 5e6
@@ -36,12 +34,12 @@ class Serial_Device:
 		#Create publisher to write continuous data to topic using custom message type
 		self.continuous_data_pub = rospy.Publisher('continuous_data', SensorOutput, queue_size=10)
 		#Create publishers to write single responses to topics for sensor object to read
-		self.byte_response_pub = rospy.Publisher('byte_response', Int32, queue_size=1)
+		self.byte_response_pub = rospy.Publisher('byte_response', ByteMsg, queue_size=1)
 		self.packet_response_pub = rospy.Publisher('packet_response', SensorOutput, queue_size=1)
 		#Listen to user commands and interrupt action to carry out the command
 		self.user_cmds = rospy.Subscriber('user_commands', UserCommand, self.send_byte)
 		#Listen to user commands to dstart or stop continuous data transfer
-		self.run_flag = rospy.Subscriber('continuous_data_flag' + str(self.sensor_num), Bool, self.changeFlag)
+		self.run_flag = rospy.Subscriber('continuous_data_flag' + str(self.sensor_num), FlagMsg, self.changeFlag)
 
 		###Initialize serial port
 		#Connect sensor serial port given by portNum (Usually 0,1, or 2)
@@ -73,6 +71,10 @@ class Serial_Device:
 		port.write(b'\x11')
 		port.purge()
 		port.close()
+
+	def __del__(self):
+		self.port.close()
+
 
 	def send_byte(msg):
 		"""

@@ -3,6 +3,7 @@ float32[6] sum
 float32[3] imu
 float32 delay 
 string report_id
-uint16 sequence_number
-uint16 accuracy
-uint32 checksum
+int32 sequence_number
+int32 accuracy
+int32 checksum
+int32 sensor_num

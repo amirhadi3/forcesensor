@@ -1,36 +1,52 @@
 #! /usr/bin/env python
 
 import rospy
-import roslaunch
-from optiforce.msg import SensorOutput
-from optiforce.msg import UserCommand
-from std_msgs.msg import Int32
-from std_msgs.msg import Bool
+import numpy as np
+from forcesensor.msg import SensorOutput
+from forcesensor.msg import UserCommand
+from forcesensor.msg import ByteMsg
+from forcesensor.msg import FlagMsg
+
 from serial_port_wrapper import Serial_Device
 
-class sensor:
+class Sensor:
 
 	def __init__(self, baud=5e6, num_sensors=1, portnum1=0, portnum2=1):
-		
-		rospy.init_node('sensor_obj')
 
-		self.sensor = {Serial_Device(), Serial_Device(1,2)}
+		rospy.init_node('sensor_obj' + str(sensor_num))
+		self.num_sensors = num_sensors
+		
+		if num_sensors == 1:
+			self.sensor = [Serial_Device(port=portnum1)]
+		else:
+			self.sensor = [Serial_Device(port=portnum1), Serial_Device(port=portnum2,sensor_num=1)]
 
 		##Variables to store most recent sensor response and whether it has been read yet
-		self.response = []
-		self.response_seen = []
+		self.response = [] #Array of two objects, one for sensor 0 and one for sensor 1
+		self.response_seen = [] #Array of 2 bools, sensor 0 and sensor 1
 
 		#Create subscribers to read single responses from the sensor over the corresponding topics
-		self.byte_response_pub = rospy.Subscriber('byte_response', Int32, self.responses.callback)
+		self.byte_response_pub = rospy.Subscriber('byte_response', ByteMsg, self.responses.callback)
 		self.packet_response_pub = rospy.Subscriber('packet_response', SensorOutput, self.responses.callback)
 
 		#Write commands from the user
 		self.user_cmds = rospy.Publisher('user_commands', UserCommand, queue_size=1)
 		#Start or stop continuous data transfer
-		self.run_flag = rospy.Publisher('continuous_data_flag', Bool, changeFlag)
+		self.run_flag = rospy.Publisher('continuous_data_flag', FlagMsg, changeFlag)
 
 	def __del__(self):
-		self.launch.shutdown()
+		"""
+		When closing the force sensor object, tell all sensors to stop continuous data transfer
+		and close all the ports
+		"""
+		stop_transmission = FlagMsg()
+		stop_transmisison.data_flag = False
+
+		for i in range(len(self.sensor)):
+			stop_transmission.sensor_num = i
+			self.run_flag.publish(stop_transmission)
+
+			del self.sensor[i]
 
 	def callback(self, msg):
 		"""
@@ -38,23 +54,25 @@ class sensor:
 		Saves the message in instance variable 'response' and updates
 		'response_seen' flag to indicate this is new data that has not yet been read
 		"""
-		if type(msg) == Int32:
+		sensor = msg.sensor_num
+
+		if type(msg) == ByteMsg:
 			#Take care of returned message by converting it to bytes, returning the bytes
 			#Convert int to binary string
-			binary = bin(msg.byte_command)[2:]
+			binary = bin(msg.byte_data)[2:]
 			#Create mutable byte array of correct size
-			response_bytes = bytearray(msg.expected_response_length)
+			response_bytes = bytearray(msg.num_bytes)
 			#Set each byte by slicing the binary string
-			for i in range(msg.expected_response_length):
+			for i in range(msg.num_bytes):
 				response_bytes[i] = int(binary[i*8:(i+1)*8],2)
 
 			#Convert the bytearray to bytes
 			msg = bytes(response_bytes)
 
-		self.response = msg
-		self.response_seen = False
+		self.response[sensor] = msg
+		self.response_seen[sensor] = False
 
-	def get_response(self):
+	def get_response(self, sensor_num=0):
 		"""
 		Get the most recent response that was received from the sensor.
 		Also sets the response_seen flag to True to indicate that this data
@@ -64,35 +82,41 @@ class sensor:
 		:return has_seen indicates whether the data has been read before or not
 			i.e. if this is new data or we have not received the new data yet
 		"""
-		has_seen = self.response_seen
-		self.response_seen = True
-		return self.response, has_seen
+		has_seen = self.response_seen[sensor_num]
+		self.response_seen[sensor_num] = True
+		return self.response[sensor_num], has_seen
 
-	def start_data_transfer(self):
+	def start_data_transfer(self, sensor_num=0):
 		"""
 		Tell the sensor to start sending data continuously
 		This data is published to the continuous_data topic and can be accessed there
 		"""
-		run_flag.publish(True)
+		flag = FlagMsg()
+		flag.data_flag = True
+		flag.sensor_num = sensor_num
+		run_flag.publish(flag)
 
-	def stop_data_transfer(self):
+	def stop_data_transfer(self, sensor_num=0):
 		"""
 		Tell the sensor to stop sending continuous data
 		"""
-		run_flag.publish(False)
+		flag = FlagMsg()
+		flag.data_flag = False
+		flag.sensor_num = sensor_num
+		run_flag.publish(flag)
 
-	def measure(self):
+	def measure(self, sensor_num=0):
 		"""
 		Request one measurement from the sensor
 		:return a parsed data packet in the form of a SensorOutput object
 			None if the packet somehow fails to arrive
 		"""
-		self.send_byte(0x12, 53)
+		self.send_byte(0x12, 53, sensor_num)
 
-		data, seen = get_response()
+		data, seen = get_response(sensor_num)
 		i = 0
 		while seen:
-			data, seen = get_response()
+			data, seen = get_response(sensor_num)
 			if i > 1000 or data == -1:
 				rospy.logwarn('Measurement of one packet failed')
 				return None
@@ -100,32 +124,32 @@ class sensor:
 
 		return data
 
-	def reset_device(self):
+	def reset_device(self, sensor_num=0):
 		"""
 		Reset the device by sending corresponding byte to sensor
 		"""
-		self.send_byte(0xF0)
+		self.send_byte(0xF0, sensor_num)
 
-	def reset_imu(self):
+	def reset_imu(self, sensor_num=0):
 		"""
 		Reset the IMU by sending corresponding byte to sensor
 		"""
-		self.send_byte(0xFA)
+		self.send_byte(0xFA, sensor_num)
 
-	def reset_dac(self):
+	def reset_dac(self, sensor_num=0):
 		"""
 		Reset the DAC by sending corresponding byte to sensor
 		"""
-		self.send_byte(0xFB)
+		self.send_byte(0xFB, sensor_num=0, sensor_num)
 
-	def reset_transducer(self, transducer_num):
+	def reset_transducer(self, transducer_num, sensor_num=0):
 		"""
 		Reset a transducer
 		:param transducer_num the index of the transducer to reset, indexed 1-6
 		"""
-		self.send_byte(0xF0 + transducer_num)
+		self.send_byte(0xF0 + transducer_num, sensor_num)
 
-	def send_byte(self, byte, response_length=0):
+	def send_byte(self, byte, response_length=0, sensor_num=0):
 		"""
 		Send a byte command to the serial port wrapper and tell it how
 		many bytes to expect in response
@@ -141,6 +165,7 @@ class sensor:
 		cmd = UserCommand()
 		cmd.byte_command = byte
 		cmd.expected_response_length = response_length
+		cmd.sensor_num = sensor_num
 
 		#Publish message
 		self.user_cmds.publish(cmd)

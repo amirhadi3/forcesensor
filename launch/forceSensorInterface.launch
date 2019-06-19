@@ -1,0 +1,4 @@
+<launch>
+	<node pkg="forcesensor" type="force_sensor_interface.py" name="forceSensorInterface" output="screen">
+	</node>
+</launch>
