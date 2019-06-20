@@ -13,9 +13,9 @@ class Sensor:
 
 	def __init__(self, baud=5e6, num_sensors=1, portnum1=0, portnum2=1):
 
-		rospy.init_node('sensor_obj' + str(sensor_num))
 		self.num_sensors = num_sensors
-		
+
+		self.sensor = []
 		if num_sensors == 1:
 			self.sensor = [Serial_Device(port=portnum1)]
 		else:
@@ -40,7 +40,7 @@ class Sensor:
 		and close all the ports
 		"""
 		stop_transmission = FlagMsg()
-		stop_transmisison.data_flag = False
+		stop_transmission.data_flag = False
 
 		for i in range(len(self.sensor)):
 			stop_transmission.sensor_num = i
@@ -140,7 +140,7 @@ class Sensor:
 		"""
 		Reset the DAC by sending corresponding byte to sensor
 		"""
-		self.send_byte(0xFB, sensor_num=0, sensor_num)
+		self.send_byte(0xFB, sensor_num=sensor_num)
 
 	def reset_transducer(self, transducer_num, sensor_num=0):
 		"""
@@ -176,3 +176,7 @@ class Sensor:
 		"""
 		for i in range(us*10):
 			a=1
+
+if __name__ == "__main__":
+	rospy.init_node('sensor_obj')
+	sense = Sensor()

@@ -243,7 +243,15 @@ class Serial_Device:
 			port.write(b'\x11')
 			port.purge()
 
-	
+if __name__ == "__main__":
+	if rospy.has_param('num_sensors'):
+		sensor_num = int(rospy.get_param("num_sensors"))
+		rospy.init_node('port' + str(sensor_num))
+		rospy.set_param('num_sensors', str(sensor_num+1))
+	else:
+		rospy.init_node('port0')
+		rospy.set_param('num_sensors', '1')
+
 
 
 

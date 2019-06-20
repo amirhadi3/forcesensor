@@ -5,12 +5,13 @@ from forcesensor.msg import SensorOutput
 from forcesensor.msg import UserCommand
 from forcesensor.msg import ByteMsg
 from serial_port_wrapper import Serial_Device
-from forcesensor import Sensor
-from PySide2.QtWidgets import (QApplication, QLineEdit, QPushButton, QVBoxLayout, QWidget, QRadioButton)
-from PySide2.QtCore import Slot, Qt
-from PySide2.QtGui import QDoubleValidator
-from pyqtgraph.widgets.MatplotlibWidget import MatplotlibWidget
+from sensor import Sensor
+import rospy
+from PyQt5.QtWidgets import (QApplication, QLineEdit, QPushButton, QHBoxLayout, QWidget, QRadioButton, QVBoxLayout, QLabel)
+from PyQt5.QtGui import QDoubleValidator
 import numpy as np
+from pyqtgraph.widgets.MatplotlibWidget import MatplotlibWidget
+from random import randint
 
 class  gui(QWidget):
 	def __init__(self, sensor, app):
