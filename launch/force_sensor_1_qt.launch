@@ -1,5 +1,4 @@
 <launch>
-	<node pkg="forcesensor" type="force_sensor_interface.py" name="force_sensor_gui" output="screen">
-	<node pkg="forcesensor" type="serial_port_wrapper.py" name="port0" output="screen">
-	</node>
+	<node pkg="forcesensor" type="force_sensor_interface.py" name="force_sensor_gui" output="screen"/>
+	<node pkg="forcesensor" type="serial_port_wrapper.py" name="port0" output="screen"/>
 </launch>

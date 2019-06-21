@@ -11,11 +11,11 @@ from std_msgs.msg import Bool
 
 class Serial_Device:
 
-	def __init__(self, port=0, sensor_num=0):
+	def __init__(self, port_num=0, sensor_num=0):
 
-		self.port_num = port
-		self.baud = 5e6
-		self.init_byte = 0xFF
+		self.INIT_BYTE = 0xAA
+		self.port_num = port_num
+		self.baud = 5000000
 		self.conti_read_flag = False
 		self.sensor_num = sensor_num
 		self.report_ids = {
@@ -27,7 +27,7 @@ class Serial_Device:
 			}
 
 		###Set up ROS
-		rospy.init_node('serial_port_wrapper' + str(self.sensor_num))
+		rospy.init_node('port' + str(self.sensor_num))
 		self.rate = rospy.Rate(1500)
 
 		#queue_size limits the number of queued messages if a subscriber is reading too slowly
@@ -43,7 +43,14 @@ class Serial_Device:
 
 		###Initialize serial port
 		#Connect sensor serial port given by portNum (Usually 0,1, or 2)
-		self.port = ftd2xx.open(self.port_num) 
+		# self.port = ftd2xx.open(port_num)
+		try:
+			self.port = ftd2xx.open(0)
+			rospy.logwarn('Opened port 0')
+		except ftd2xx.ftd2xx.DeviceError:
+			self.port = ftd2xx.open(1)
+			rospy.logwarn('Opened port 1')
+
 		#Set latency timer to 1ms (lowest possible value. Ideally would be lower but limited by USB frame size)
 		self.port.setLatencyTimer(1)
 		#Set read an write timeouts 
@@ -52,31 +59,31 @@ class Serial_Device:
 		self.port.setUSBParameters(64)
 		#Set baud rate to rate specified above
 		self.port.setBaudRate(self.baud)
-		reset(self.port) #reset transmit and receive buffers
+		self.reset() #reset transmit and receive buffers
 
 		##Run loop - do this forever in the background
 		while not rospy.is_shutdown():
-			while CONTINUOUS_READ_FLAG:
+			while self.conti_read_flag:
 				#Wait for initialization bit and matching CRC-4
-				if wait_for_packet(port):
-					data = port.read(51)
+				if self.wait_for_packet(port):
+					data = self.port.read(51)
 					#Check CRC-32 of data packet
-					if check_crc(to_int(data[47:]), data[:47]):
+					if self.check_crc(self.to_int(data[47:]), data[:47]):
 						#Parse and publish if correct, otherwise ignore
-						parsed = parse(data)
-						continuous_data_pub.publish(parsed)
-				rate.sleep()
-			rate.sleep()
+						parsed = self.parse(data)
+						self.continuous_data_pub.publish(parsed)
+				self.rate.sleep()
+			self.rate.sleep()
 
-		port.write(b'\x11')
-		port.purge()
-		port.close()
+		self.port.write(b'\x11')
+		self.port.purge()
+		self.port.close()
 
 	def __del__(self):
 		self.port.close()
 
 
-	def send_byte(msg):
+	def send_byte(self, msg):
 		"""
 		Callback function for the user command topic. This is called whenever the user issues a command
 		other than start/stop continuous data transfer. The message contains two ints. First, the command byte
@@ -86,39 +93,50 @@ class Serial_Device:
 		and written to the packet_response topic 	
 		"""
 
-		port.write(bytes([msg.command_byte]))
-		port.purge(1)
+		self.port.write(bytes([msg.command_byte]))
+		self.port.purge(1)
+		length = int(msg.expected_response_length)
+		cmd_byte = int(msg.command_byte)
+		rospy.logwarn('Expected length: ' + str(length))
+		rospy.logwarn('Received command: ' + str(cmd_byte))
 		#If we expect a response, read in the expected length
-		if msg.expected_response_length > 0:
+		if length > 0:
 			#Special case where we read one packet
-			if msg.command_byte == 12:
+			if int(cmd_byte) == 12:
 				count = 0
 				while count < 100:
 					#Wait for init byte or timeout
-					if wait_for_packet(port):
-						data = port.read(51)
+					if self.wait_for_packet(self.port):
+						data = self.port.read(51)
 						#Check CRC-32 of data packet
-						if check_crc(to_int(data[47:]), data[:47]):
+						if self.check_crc(self.to_int(data[47:]), data[:47]):
 							#Parse and publish if correct
-							parsed = parse(data)
-							packet_response_pub.publish(parsed)
+							parsed = self.parse(data)
+							self.packet_response_pub.publish(parsed)
 							break
 						else:
 							#If CRC was wrong, try again
-							port.write(bytes([msg]))
-							port.purge(1)
+							self.port.write(bytes([msg]))
+							self.port.purge(1)
 					else: #If timed out before start byte found try again
-						port.write(bytes([msg]))
-						port.purge(1)
+						self.port.write(bytes([msg]))
+						self.port.purge(1)
 					count += 1
 				if count == 100:
-					byte_response_pub.publish(-1)
+					self.byte_response_pub.publish(-1)
 			else:
 				#Usually just read response byte
-				data = port.read(msg.expected_response_length)
-				byte_response_pub.publish(int(data.hex(),16))
+				count = 0
+				while count < 100:
+					if self.port.getQueueStatus() == length:
+						data = self.port.read(length)
+						rospy.logwarn(data)
+						self.byte_response_pub.publish(int(data.hex(),16))
+					count += 1
+				if count == 100:
+					self.byte_response_pub.publish(-1)
 
-	def reset(port):
+	def reset(self):
 			"""
 			Reset all input and output buffers until there are no more bytes waiting.
 			If the buffer keeps filling up with new data after the reset, this will try
@@ -126,14 +144,14 @@ class Serial_Device:
 			writing to the buffer
 			"""
 			i = 0
-			while port.getQueueStatus() > 0 and i < 100:
-				port.resetDevice()
+			while self.port.getQueueStatus() > 0 and i < 100:
+				self.port.resetDevice()
 				i += 1
 
 			if i == 100:
 				print('Failed to reset. Ensure nothing is actively sending data')
 
-	def check_crc(crc, p, n=32, polynomial=0xedb88320):
+	def check_crc(self, crc, p, n=32, polynomial=0xedb88320):
 		    """
 		    Check CRC Checksum with arbitrary number of bits
 		    :param crc the n bit checksum in hex or int - note that the sensor returns LSB first, 
@@ -166,12 +184,12 @@ class Serial_Device:
 		            pBin = '0' + pBin
 		    return p == 0
 
-	def wait_for_packet(port, timeout=100):
+	def wait_for_packet(self, timeout=100):
 		for i in range(timeout):
 			#Check for initialization byte
-			if port.read(1) == bytes([INIT_BYTE]):
+			if self.port.read(1) == bytes([self.INIT_BYTE]):
 				#Read next byte
-				byte = port.read(1)
+				byte = self.port.read(1)
 
 				#Store 4 LSBs of the byte (the checksum)
 				crc = byte[0] & 0x0F
@@ -180,10 +198,10 @@ class Serial_Device:
 				p = (INIT_BYTE << 4) + ((byte[0] & 0xF0) >> 4) #4 MSBs of byte are the counter
 
 				#Test checksum
-				return check_crc(crc,p,4,0x9)
+				return self.check_crc(crc,p,4,0x9)
 		return False
 
-	def parse(byte_data):
+	def parse(self, byte_data):
 		"""
 		Parse the data packet of 51 bytes using the SH-2 structure
 		:param byte_data 51-byte-long bytes object
@@ -217,7 +235,7 @@ class Serial_Device:
 
 		return data_out
 
-	def to_int(byte):
+	def to_int(self, byte):
 		"""
 		Helper method to convert a bytes object where the least significant byte is first into an int
 		"""
@@ -226,7 +244,7 @@ class Serial_Device:
 			num += (byte[i] << i*8)
 		return num
 
-	def changeFlag(msg):
+	def changeFlag(self, msg):
 		"""
 		Change the flag to notify the main loop about whether it should measure
 		Also send the command byte to the sensor that tells it to start or stop
@@ -236,22 +254,20 @@ class Serial_Device:
 
 		if msg == True:
 			#Prompt the start of continuous data transmission
-			port.write(b'\x10')
-			port.purge()
+			self.port.write(b'\x10')
+			self.port.purge()
 		else:
 			#Prompt the end of continuous data transmission
-			port.write(b'\x11')
-			port.purge()
+			self.port.write(b'\x11')
+			self.port.purge()
 
 if __name__ == "__main__":
-	if rospy.has_param('num_sensors'):
-		sensor_num = int(rospy.get_param("num_sensors"))
-		rospy.init_node('port' + str(sensor_num))
-		rospy.set_param('num_sensors', str(sensor_num+1))
+	if rospy.has_param('has_sensor'):
+		port1 = Serial_Device(1,1)
 	else:
-		rospy.init_node('port0')
-		rospy.set_param('num_sensors', '1')
-
+		rospy.set_param('has_sensor', True)
+		port0 = Serial_Device()
+		
 
 
 

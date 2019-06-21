@@ -104,7 +104,7 @@ class  gui(QWidget):
 		self.acc1 = 4
 		self.acc2 = 4
 
-		sub = rospy.Subscriber('continuous_data', self.data_subscriber)
+		sub = rospy.Subscriber('continuous_data', SensorOutput, self.data_subscriber)
 
 		self.window.setLayout(self.lrLayout)
 		self.window.show()
@@ -118,7 +118,7 @@ class  gui(QWidget):
 	def measure_wrapper(self):
 		self.measurement = self.sensor.measure(self.num)
 	def reset_wrapper(self):
-		self.sensor.reset(self.num)
+		self.sensor.reset_device(self.num)
 	def reset_transducer_wrapper(self):
 		self.sensor.reset_transducer(self.transducer_num, self.num)
 	def reset_imu_wrapper(self):

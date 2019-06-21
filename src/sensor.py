@@ -11,28 +11,30 @@ from serial_port_wrapper import Serial_Device
 
 class Sensor:
 
-	def __init__(self, baud=5e6, num_sensors=1, portnum1=0, portnum2=1):
+	def __init__(self, baud=5000000, num_sensors=1):
 
 		self.num_sensors = num_sensors
-
-		self.sensor = []
-		if num_sensors == 1:
-			self.sensor = [Serial_Device(port=portnum1)]
-		else:
-			self.sensor = [Serial_Device(port=portnum1), Serial_Device(port=portnum2,sensor_num=1)]
 
 		##Variables to store most recent sensor response and whether it has been read yet
 		self.response = [] #Array of two objects, one for sensor 0 and one for sensor 1
 		self.response_seen = [] #Array of 2 bools, sensor 0 and sensor 1
+		if num_sensors==1:
+			self.response.append(0)
+			self.response_seen.append(True)
+		else:
+			self.response.append(0)
+			self.response.append(0)
+			self.response_seen.append(True)
+			self.response_seen.append(True)
 
 		#Create subscribers to read single responses from the sensor over the corresponding topics
-		self.byte_response_pub = rospy.Subscriber('byte_response', ByteMsg, self.responses.callback)
-		self.packet_response_pub = rospy.Subscriber('packet_response', SensorOutput, self.responses.callback)
+		self.byte_response_pub = rospy.Subscriber('byte_response', ByteMsg, self.callback)
+		self.packet_response_pub = rospy.Subscriber('packet_response', SensorOutput, self.callback)
 
 		#Write commands from the user
 		self.user_cmds = rospy.Publisher('user_commands', UserCommand, queue_size=1)
 		#Start or stop continuous data transfer
-		self.run_flag = rospy.Publisher('continuous_data_flag', FlagMsg, changeFlag)
+		self.run_flag = rospy.Publisher('continuous_data_flag', FlagMsg, queue_size=1)
 
 	def __del__(self):
 		"""
@@ -42,11 +44,9 @@ class Sensor:
 		stop_transmission = FlagMsg()
 		stop_transmission.data_flag = False
 
-		for i in range(len(self.sensor)):
+		for i in range(self.num_sensors):
 			stop_transmission.sensor_num = i
 			self.run_flag.publish(stop_transmission)
-
-			del self.sensor[i]
 
 	def callback(self, msg):
 		"""
@@ -94,7 +94,7 @@ class Sensor:
 		flag = FlagMsg()
 		flag.data_flag = True
 		flag.sensor_num = sensor_num
-		run_flag.publish(flag)
+		self.run_flag.publish(flag)
 
 	def stop_data_transfer(self, sensor_num=0):
 		"""
@@ -103,7 +103,7 @@ class Sensor:
 		flag = FlagMsg()
 		flag.data_flag = False
 		flag.sensor_num = sensor_num
-		run_flag.publish(flag)
+		self.run_flag.publish(flag)
 
 	def measure(self, sensor_num=0):
 		"""
@@ -113,10 +113,10 @@ class Sensor:
 		"""
 		self.send_byte(0x12, 53, sensor_num)
 
-		data, seen = get_response(sensor_num)
+		data, seen = self.get_response(sensor_num)
 		i = 0
 		while seen:
-			data, seen = get_response(sensor_num)
+			data, seen = self.get_response(sensor_num)
 			if i > 1000 or data == -1:
 				rospy.logwarn('Measurement of one packet failed')
 				return None
@@ -159,14 +159,16 @@ class Sensor:
 		"""
 		#Convert to int if not already an int
 		if type(byte) == bytes:
-			byte = int(byte.hex,16)
+			byte = int(byte.hex(),16)
 
 		#Create message
 		cmd = UserCommand()
-		cmd.byte_command = byte
+		# cmd.byte_command = byte
 		cmd.expected_response_length = response_length
 		cmd.sensor_num = sensor_num
+		cmd.command_byte = byte
 
+		rospy.logwarn('Sending byte ' + str(byte))
 		#Publish message
 		self.user_cmds.publish(cmd)
 
