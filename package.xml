@@ -2,7 +2,7 @@
 <package format="2">
   <name>forcesensor</name>
   <version>0.0.0</version>
-  <description>The forcesensor package</description>
+  <description>Control Optical Force Sensor with ROS</description>
 
   <!-- One maintainer tag required, multiple allowed, one person per tag -->
   <!-- Example:  -->

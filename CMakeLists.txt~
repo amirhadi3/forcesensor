@@ -10,7 +10,6 @@ project(forcesensor)
 find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
-  geometry_msgs
   message_generation
 )
 
@@ -50,15 +49,18 @@ find_package(catkin REQUIRED COMPONENTS
 ## Generate messages in the 'msg' folder
 add_message_files(
   FILES
+  UserCommand.msg
   SensorOutput.msg
+  ByteMsg.msg
   FlagMsg.msg
 )
 
 ## Generate services in the 'srv' folder
-add_service_files(
-  FILES
-  SensorOutputRequest.srv
-)
+# add_service_files(
+#   FILES
+#   Service1.srv
+#   Service2.srv
+# )
 
 ## Generate actions in the 'action' folder
 # add_action_files(
@@ -71,7 +73,6 @@ add_service_files(
 generate_messages(
   DEPENDENCIES
   std_msgs  # Or other packages containing msgs
-  geometry_msgs
 )
 
 ################################################

@@ -1,3 +1,0 @@
-int32 command_byte
-int32 expected_response_length
-int32 sensor_num

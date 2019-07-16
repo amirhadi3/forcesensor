@@ -6,7 +6,6 @@ from forcesensor.msg import UserCommand
 from forcesensor.msg import ByteMsg
 from serial_port_wrapper import Serial_Device
 from sensor import Sensor
-import rospy
 from PyQt5.QtWidgets import (QApplication, QLineEdit, QPushButton, QHBoxLayout, QWidget, QRadioButton, QVBoxLayout, QLabel)
 from PyQt5.QtGui import QDoubleValidator
 import numpy as np
@@ -28,7 +27,7 @@ class  gui(QWidget):
 		self.window = QWidget()
 
 		if sensor.num_sensors == 2:
-			self.device_num_selector = QRadioButton('Click for sensor 2, leave unchecked for sensor 1')
+			self.device_num_selector = QRadioButton('Controlling Sensor 1 (click to toggle)')
 			self.device_num_selector.toggled.connect(self.device_num_selector_callback)
 			self.layout.addWidget(self.device_num_selector)
 
@@ -48,7 +47,12 @@ class  gui(QWidget):
 		self.reset_button.clicked.connect(self.reset_wrapper)
 		self.layout.addWidget(self.reset_button)
 
-		self.reset_transducer_button = QPushButton('Reset Transducer')
+		self.transducer_num_input = QLineEdit()
+		self.transducer_num_input.setPlaceholderText('Enter Transducer Number (1-6)')
+		self.transducer_num_input.returnPressed.connect(self.update_transducer_num)
+		self.layout.addWidget(self.transducer_num_input)
+
+		self.reset_transducer_button = QPushButton('Reset Selected Transducer')
 		self.reset_transducer_button.clicked.connect(self.reset_transducer_wrapper)
 		self.layout.addWidget(self.reset_transducer_button)
 
@@ -125,6 +129,10 @@ class  gui(QWidget):
 		self.sensor.reset_imu(self.num)
 	def reset_dac_wrapper(self):
 		self.sensor.reset_dac(self.num)
+	def update_transducer_num(self):
+		self.transducer_num = int(self.transducer_num_input.text())
+		self.reset_transducer_button.setText('Reset Transducer ' + str(self.transducer_num))
+		#self.reset_transducer_wrapper()
 	def device_num_selector_callback(self):
 		if self.device_num_selector.isChecked():
 			self.num = 1
