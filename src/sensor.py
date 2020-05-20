@@ -1,151 +1,148 @@
 #! /usr/bin/env python
-
+import crc
 import rospy
 import numpy as np
 from forcesensor.msg import SensorOutput
 from forcesensor.srv import SensorOutputRequest
+from forcesensor.srv import ByteSrv
 from forcesensor.msg import FlagMsg
-from forcesensor.msg import ByteMsg
-import CRC
 import time
-
-from serial_port_wrapper import Serial_Device
+import re
 
 class Sensor:
 
-	def __init__(self, baud=5000000, num_sensors=1):
+	def __init__(self, sensorNum):
 
-		self.num_sensors = num_sensors
-
-		##Variables to store most recent sensor response and whether it has been read yet
-		self.response = [] #Array of two objects, one for sensor 0 and one for sensor 1
-		self.response_seen = [] #Array of 2 bools, sensor 0 and sensor 1
-		if num_sensors==1:
-			self.response.append(0)
-			self.response_seen.append(True)
-		else:
-			self.response.append(0)
-			self.response.append(0)
-			self.response_seen.append(True)
-			self.response_seen.append(True)
-
-		# #Create subscribers to read single responses from the sensor over the corresponding topics
-		# self.byte_response_pub = rospy.Subscriber('byte_response', ByteMsg, self.__callback)
-		# self.packet_response_pub = rospy.Subscriber('packet_response', SensorOutput, self.__callback)
+		self.sensorNum = sensorNum
+		self.crc8_table = crc.calculate_CRC8_table()
+		self.crc32_table = crc.calculate_CRC32_table()
 
 		#Write commands from the user
-		self.user_cmds = rospy.Publisher('user_commands', ByteMsg, queue_size=num_sensors)
+		# self.user_cmds = rospy.Publisher('user_commands' + str(sensorNum), ByteMsg, queue_size=1)
 		#Start or stop continuous data transfer
-		self.run_flag = rospy.Publisher('continuous_data_flag', FlagMsg, queue_size=1)
+		self.run_flag = rospy.Publisher('continuous_data_flag' + str(sensorNum), FlagMsg, queue_size=1)
+		rospy.wait_for_service('poll' + str(sensorNum))
+		self.pollProxy = rospy.ServiceProxy('poll' + str(sensorNum), SensorOutputRequest, persistent=True)
+		rospy.wait_for_service('user_command' + str(sensorNum))
+		self.commandProxy = rospy.ServiceProxy('user_command' + str(sensorNum), ByteSrv, persistent=True)
 
-	def __del__(self):
-		"""
-		When closing the force sensor object, tell all sensors to stop continuous data transfer
-		and close all the ports
-		"""
-		stop_transmission = FlagMsg()
-		stop_transmission.data_flag = False
+		self.inBuf = [False]*6
+		self.adsGain = [1]*6
+		self.adsRate = [30e3]*6
+		self.vref = 2.5
+		self.OFC = [1]*6
+		self.FSC = [1]*6
+		for i in range(6):
+			o,f = self.ads_report_registers(i)
+			self.OFC[i] = o
+			self.FSC[i] = f
 
-		for i in range(self.num_sensors):
-			stop_transmission.sensor_num = i
-			self.run_flag.publish(stop_transmission)
-
-	def start_data_transfer(self, data_rate=1500, sensor_num=0):
+	def start_data_transmission(self, data_rate=1500):
 		"""
 		Tell the sensor to start sending data continuously
 		This data is published to the continuous_data topic and can be accessed there
-		:param sensor_num the index of the sensor to send the command to.
 		"""
 		flag = FlagMsg()
-		flag.data_flag = True
-		flag.sensor_num = sensor_num
+		flag.data_flag = 1
 		flag.data_rate = data_rate
-		self.run_flag.publish(flag)
+		flag.adsGain = self.adsGain
+		flag.vref = self.vref
+		flag.adsRate = self.adsRate
+		flag.inBuf = self.inBuf
+		flag.FSC = self.FSC
+		flag.OFC = self.OFC
 
-	def stop_data_transfer(self, sensor_num=0):
+		rospy.loginfo('Starting data transfer at ' + str(data_rate) + 'Hz')
+		self.run_flag.publish(flag)
+		return 'Starting Data Transfer'
+
+	def stop_data_transmission(self):
 		"""
 		Tell the sensor to stop sending continuous data
-		:param sensor_num the index of the sensor to send the command to.
 		"""
 		flag = FlagMsg()
-		flag.data_flag = False
-		flag.sensor_num = sensor_num
+		flag.data_flag = 0
 		flag.data_rate = 0
+		flag.adsGain = self.adsGain
+		flag.vref = self.vref
+		flag.adsRate = self.adsRate
+		flag.inBuf = self.inBuf
+		flag.FSC = self.FSC
+		flag.OFC = self.OFC
 		self.run_flag.publish(flag)
+		return 'Stopped Data Transfer'
 
-	def measure(self, sensor_num=0):
+	def poll(self):
 		"""
 		Request one measurement from the sensor
 		:return a parsed data packet in the form of a SensorOutput object
 			None if the packet somehow fails to arrive
-		:param sensor_num the index of the sensor to send the command to.
-			Can only do one at a time
 		"""
-		rospy.wait_for_service('ft_read')
-		read = rospy.ServiceProxy('ft_read', SensorOutputRequest)
-		try:
-			data = read(sensor_num)
-			rospy.loginfo(data)
-		except rospy.ServiceException as exc:
-			rospy.logwarn('Service did not process measurement request: ' + str(exc))
-			return None
+		data = self.get_service(self.pollProxy, self.adsGain, self.vref, self.adsRate, self.inBuf, self.OFC, self.FSC)
 
-		if data.sensor_num == -2:
+		if data == None or data.report_id == 'NA':
 			rospy.logwarn('Measurement of one packet failed: returned empty packet')
 	 		return None
 	 	else:
-	 		return SensorOutput(data.differential, data.sum, data.imu, data.report_id, np.int32(data.checksum), data.sensor_num)
+	 		return SensorOutput(data.wrench, data.differential, data.differential_raw, data.sum, data.sum_raw, data.imu, data.quaternion, data.saturated, data.temperature, data.report_id)
 		
-	def reset_device(self, sensor_num=-1):
+	def reset_device(self):
 		"""
 		Reset the device by sending corresponding byte to sensor
-		:param sensor_num the index of the sensor to send the command to.
-			The default value of -1 corresponds to sending the byte to all the sensors
 		"""
-		self.send_byte([0xF0], sensor_num)
+		return self.send_byte([0xF0, 0x00, 0x00])
 
-	def reset_imu(self, sensor_num=-1):
+	def reset_imu(self):
 		"""
 		Reset the IMU by sending corresponding byte to sensor
-		:param sensor_num the index of the sensor to send the command to.
-			The default value of -1 corresponds to sending the byte to all the sensors
 		"""
-		self.send_byte([0xFA], sensor_num)
+		return self.send_byte([0xFA, 0x00, 0x00])
 
-	def reset_dac(self, sensor_num=-1):
+	def reset_dac(self):
 		"""
 		Reset the DAC by sending corresponding byte to sensor
-		:param sensor_num the index of the sensor to send the command to.
-			The default value of -1 corresponds to sending the byte to all the sensors
 		"""
-		self.send_byte([0xFB], sensor_num)
+		return self.send_byte([0xFB, 0x00, 0x00])
 
-	def reset_transducer(self, transducer_num, sensor_num=-1):
+	def reset_ads(self, ads_num):
 		"""
-		Reset a transducer (ADS1257-A thru F)
-		:param transducer_num the index of the transducer to reset, indexed 1-6
-			Input 7 to reset all transducers
-		:param sensor_num the index of the sensor to send the command to.
-			The default value of -1 corresponds to sending the byte to all the sensors
+		Reset and activate one of the ADS1257 adss
+		:param ads_num the index of the ads to reset (0-5)
 		"""
-		if transducer_num < 1 or transducer_num > 7:
-			rospy.logwarn("Invalid Transducer Number")
-			return
-		self.send_byte([0xF0 + transducer_num], sensor_num)
+		if ads_num <= 5 and ads_num >= 0: 
+			resp = self.send_byte([0xF0 + ads_num + 1, 0x00, 0x00])
+			time.sleep(0.1)
+			o,f = self.ads_report_registers(ads_num)
+			if 2**17 == o or 2**17 == f:
+				rospy.logwarn('Updating calibration constants failed. Please Retry')
+			else:
+				self.OFC[ads_num] = o
+				self.FSC[ads_num] = f
+			return resp + 'ADS' + str(ads_num+1) + '-RECAL-S. '
+		elif ads_num == -1:
+			resp = ''
+			for i in range(6):
+				resp+=self.reset_ads(i)
+			return resp
+		else: 
+			rospy.logwarn('Invalid index')
 
-	def deactivate_transducer(self, transducer_num, sensor_num=-1):
+	def deactivate_ads(self, ads_num):
 		"""
 		Deactivate a transducer
 		:param transducer_num the index of the transducer to deactivate, indexed 1-6
-		:param sensor_num the index of the sensor to send the command to.
-			The default value of -1 corresponds to sending the byte to all the sensors
 		"""
-		if transducer_num < 1 or transducer_num > 6:
-			rospy.logwarn("Invalid Transducer Number")
-			return
-		self.send_byte([0xE0 + transducer_num], sensor_num)
+		if ads_num == -1:
+			resp = ''
+			for i in range(6):
+				resp += self.send_byte([0xE0 + i+1, 0x00, 0x00])
+			return resp
+		if ads_num < 5 and ads_num >= 0: 
+			return self.send_byte([0xE0 + ads_num+1, 0x00, 0x00])
+		else: 
+			rospy.logwarn('Invalid index')
 
-	def config_imu(self, mode, delay, sensor_num=-1):
+	def config_imu(self, mode, delay):
 		"""
 		Configure the IMU output
 		:param mode the type of output to set the IMU to output
@@ -161,49 +158,102 @@ class Sensor:
 		"""
 		byte = []
 
+		interv = self.toHex(delay)
+		while len(interv) < 4:
+			interv = '0' + interv
+
+		delay1 = int(interv[:2],16)
+		delay2 = int(interv[2:],16)
+
 		if type(mode) == str:
 			mode = mode.lower()
 			
 			if mode.startswith('acc'):
-				byte = [0x21, delay]
+				msg = 0x21
 			elif mode.startswith('gyr'):
-				byte = [0x22, delay]
+				msg = 0x22
 			elif mode.startswith('lin'):
-				byte = [0x24, delay]
+				msg = 0x24
 			elif mode.startswith('rot'):
-				byte = [0x25, delay]
+				msg = 0x25
 			elif mode.startswith('gam'):
-				byte = [0x28, delay]
+				msg = 0x26
 			else:
 				rospy.logwarn('Invalid IMU Configuration Mode')
 				return
+			byte = [msg, delay1, delay2]
 		elif type(mode) == int:
-			byte = [0x20 + mode, delay]
+			byte = [0x20 + mode, delay1, delay2]
 		else:
 			return
 
-		self.send_byte(byte, sensor_num=sensor_num)
+		return self.send_byte(byte)
 
-	def set_imu_accelerometer(self, delay, sensor_num=-1):
-		self.config_imu(1, delay, sensor_num)
+	def set_imu_accelerometer(self, delay):
+		return self.config_imu(1, delay)
 
-	def set_imu_gyroscope(self, delay, sensor_num=-1):
-		self.config_imu(2, delay, sensor_num)
+	def set_imu_gyroscope(self, delay):
+		return self.config_imu(2, delay)
 
-	def set_imu_lin_accel(self, delay, sensor_num=-1):
-		self.config_imu(4, delay, sensor_num)
+	def set_imu_lin_accel(self, delay):
+		return self.config_imu(4, delay)
 
-	def set_imu_rotation(self, delay, sensor_num=-1):
-		self.config_imu(5, delay, sensor_num)
+	def set_imu_rotation(self, delay):
+		return self.config_imu(5, delay)
 
-	def set_imu_game_rot(self, delay, sensor_num=-1):
-		self.config_iu(8, delay, sensor_num)
+	def set_imu_game_rot(self, delay):
+		return self.config_imu(8, delay)
 
-	def config_adc(self, adc_num, category, setting, sensor_num=-1):
+	def imu_start_calibration(self):
+		flag = FlagMsg()
+		flag.data_flag = 2
+		flag.data_rate = 1500
+		flag.adsGain = self.adsGain
+		flag.vref = self.vref
+		flag.adsRate = self.adsRate
+		flag.inBuf = self.inBuf
+		flag.FSC = self.FSC
+		flag.OFC = self.OFC
+		self.run_flag.publish(flag)
+		return self.send_byte([0x2F, 0x01, 0x00])
+
+	def imu_cancel_calibration(self):
 		"""
-		Configure the ADS1257-x device(s). These are ADCs with built in PGAs.
-		:param adc_num specifies which of the six ADCs to control
-			Indexing is 1-6. -1 targets every ADC at once
+		Stop the calibration without saving it
+		"""
+		flag = FlagMsg()
+		flag.data_flag = 0
+		flag.data_rate = 1500
+		flag.adsGain = self.adsGain
+		flag.vref = self.vref
+		flag.adsRate = self.adsRate
+		flag.inBuf = self.inBuf
+		flag.FSC = self.FSC
+		flag.OFC = self.OFC
+		self.run_flag.publish(flag)
+		return self.send_byte([0x2F, 0x03, 0x00])
+
+	def imu_finish_calibration(self):
+		"""
+		Complete the IMU calibration, saving the Dynamic Calibration Data (DCD0 to the IMU)
+		"""
+		flag = FlagMsg()
+		flag.data_flag = 0
+		flag.data_rate = 1500
+		flag.adsGain = self.adsGain
+		flag.vref = self.vref
+		flag.adsRate = self.adsRate
+		flag.inBuf = self.inBuf
+		flag.FSC = self.FSC
+		flag.OFC = self.OFC
+		self.run_flag.publish(flag)
+		return self.send_byte([0x2F, 0x02, 0x00])
+
+	def config_ads(self, ads_num, category, setting):
+		"""
+		Configure the ADS1257-x device(s). These are adss with built in PGAs.
+		:param ads_num specifies which of the six adss to control
+			Indexing is 0-5. -1 targets every ads at once
 		:param category what configuration category to change. 
 			The following are the available categories:
 				0	'root' 		configure the root registers
@@ -231,171 +281,323 @@ class Sensor:
 					Enter the int x to select AINx where x is 0, 1, 2, or 3
 				4-Negative Channel Configuration
 					Enter the int x to select AINx where x is 0, 1, 2, or 3
-		:param sensor_num specifies which sensor this is done to. -1 indicates all sensors
+				6- Issues self-calibration 
 		""" 
-		if adc_num not in [-1,1,2,3,4,5,6]:
-			rospy.logwarn('Invalid ADC number. Values between 1 and 6 are permitted, or -1 to select all')
+		if ads_num not in [-1,0,1,2,3,4,5]:
+			rospy.logwarn('Invalid ads number. Values between 1 and 6 are permitted, or -1 to select all')
 			return
-
-		#Set the first byte
-		byte = [0x3 + adc_num] 
-		
-		#Select which category to work with
-		cat_dict = {'root' : 0, 'drate' : 1, 'pga' : 2, 'pos' : 3, 'neg' : 4}
-		if type(category) == str: #Convert string inputs
-			category = cat_dict.get(category.lower(), value=-1)
-		if category < 0 or category > 4: #Check validity
-			rospy.logwarn('Invalid Category String')
-			return
-
-		if category == 0: #Configure Root Registers
-			if (type(setting) != tuple and type(setting) != str) or len(setting) != 2 or setting[0] not in [0,1] or setting[1] not in [0,1]:
-				rospy.logwarn('Invalid setting. Please enter a tuple or string with 2 binary elements to configure root registers')
+		if ads_num == -1:
+			resp = ''
+			for i in range(6):
+				resp += self.config_ads(i,category,setting)
+			return resp
+		else:
+			#Set the first byte
+			byte = [0x30 + ads_num+1] 
+			resp = []
+			#Select which category to work with
+			cat_dict = {'root' : 0, 'drate' : 1, 'pga' : 2, 'pos' : 3, 'neg' : 4}
+			if type(category) == str: #Convert string inputs
+				category = cat_dict.get(category.lower(), value=-1)
+			if category < 0 or category > 6: #Check validity
+				rospy.logwarn('Invalid Category String')
 				return
 
-			config = int('000' + str(setting[0]) + str(setting[1]) + '000',2)
+			if category == 0: #Configure Root Registers
+				if (type(setting) != tuple and type(setting) != str) or len(setting) != 2 or setting[0] not in [0,1] or setting[1] not in [0,1]:
+					rospy.logwarn('Invalid setting. Please enter a tuple or string with 2 binary elements to configure root registers')
+					return
+				self.inBuf[ads_num] = setting[1]==1
+				config = int(str(setting[0]) + str(setting[1]) + '000000',2)
+				byte.append(0x00)
+				byte.append(config)
 
-		elif category == 1: #Configure Data Rate
-			rates = np.array([2.5, 5, 10, 15, 25, 30, 50, 60, 100, 500, 1e3, 2e3, 3.75e3, 7.5e3, 15e3, 30e3])
-			#Ensure we have an acceptable value
-			if setting not in rates:
-				diff = np.abs(rates - setting)
-				setting = rates[np.argmin(diff)]
-				rospy.logwarn('Data rate value not permitted. Rounding to ' + str(setting))
+			elif category == 1: #Configure Data Rate
+				rates = np.array([2.5, 5, 10, 15, 25, 30, 50, 60, 100, 500, 1e3, 2e3, 3.75e3, 7.5e3, 15e3, 30e3])
+				#Ensure we have an acceptable value
+				if setting not in rates:
+					diff = np.abs(rates - setting)
+					setting = rates[np.argmin(diff)]
+					rospy.logwarn('Data rate value not permitted. Rounding to ' + str(setting))
 
-			drate = self.to_hex(np.where(rates == setting))
-			config = int('1' + drate, 16)
+				self.adsRate[ads_num] = setting
 
-		elif category == 2: #Configure PGA Gain
-			gains = np.array([1, 2, 4, 8, 16, 32, 64])
-			
-			if setting not in gains:
-				diff = np.abs(gains - setting)
-				setting = gains[np.argmin(diff)]
-				rospy.logwarn('Gain value not permitted. Rounding to ' + str(setting))
+				config = np.where(rates == setting)[0][0]
+				byte.append(0x01)
+				byte.append(config)
 
-			gain = bin(np.where(gains == setting))[2:]
-			while len(gain) < 5:
-				gain = '0' + gain
+			elif category == 2: #Configure PGA Gain
+				gains = np.array([1, 2, 4, 8, 16, 32, 64])
+				
+				if setting not in gains:
+					diff = np.abs(gains - setting)
+					setting = gains[np.argmin(diff)]
+					rospy.logwarn('Gain value not permitted. Rounding to ' + str(setting))
 
-			config = int('010' + gain, 2)
+				self.adsGain[ads_num] = setting
 
-		elif category == 3: #Configure Positive Channel
-			if setting not in [0,1,2,3]:
-				rospy.logwarn('Please enter a channel between 0 and 4 (inclusive)')
-				return
-			config = int('3' + str(setting), 16)
+				config = np.where(gains == setting)[0][0]
+				byte.append(0x02)
+				byte.append(config)
 
-		elif category == 4: #Configure Negative Channel
-			if setting not in [0,1,2,3]:
-				rospy.logwarn('Please enter a channel between 0 and 4 (inclusive)')
-				return
-			config = int('4' + str(setting), 16)
+			elif category == 3: #Configure Positive Channel
+				if setting not in [0,1,2,3]:
+					rospy.logwarn('Please enter a channel between 0 and 3 (inclusive)')
+					return
+				byte.append(0x03)
+				byte.append(setting)
 
-		byte.append(config)
-		self.send_byte(byte, sensor_num=sensor_num)
+			elif category == 4: #Configure Negative Channel
+				if setting not in [0,1,2,3]:
+					rospy.logwarn('Please enter a channel between 0 and 3 (inclusive)')
+					return
+				byte.append(0x04)
+				byte.append(setting)
 
-	def set_adc_drate(self, adc_num, data_rate, sensor_num=-1):
+			elif category == 6: #self-calibrate
+				byte.append(0x06)
+				byte.append(0x00)
+
+		resp = self.send_byte(byte)
+
+		o,f = self.ads_report_registers(ads_num)
+		if o==2**25 or f==2**25:
+			rospy.logwarn('Updating calibration constants failed. Please Retry')
+		else:
+			self.OFC[ads_num] = o
+			self.FSC[ads_num] = f
+
+		return resp
+
+	def set_ads_drate(self, ads_num, data_rate):
 		"""
-		Convenience method that calls config_adc to set the data rate
-		:param adc_num which ADC to do this to (1-6)
-		:param data_rate the desired data rate. If this is not one allowed by config_adc,
+		Convenience method that calls config_ads to set the data rate
+		:param ads_num which ads to do this to (1-6)
+		:param data_rate the desired data rate. If this is not one allowed by config_ads,
 			it will be rounded to the nearest allowed value
-		:param sensor_num the index of the sensor to send the command to.
-				The default value of -1 corresponds to sending the command to all the sensors	
 		"""
-		self.config_adc(adc_num, 1, data_rate, sensor_num)
+		return self.config_ads(ads_num, 1, data_rate)
 
-	def set_adc_registers(self, adc_num, ACAL, IN_BUFF, sensor_num=-1):
+	def set_ads_registers(self, ads_num, ACAL, IN_BUFF):
 			"""
-			Convenience method that calls config_adc to configure the root registers
-			:param adc_num which ADC to do this to (1-6)
+			Convenience method that calls config_ads to configure the root registers
+			:param ads_num which ads to do this to (1-6)
 			:param ACAL 1 to enable ACAL, 0 to disable it
 			:param IN_BUFF 1 to enable IN_BUFF, 0 to disable it
-			:param sensor_num the index of the sensor to send the command to.
-				The default value of -1 corresponds to sending the command to all the sensors	
 			"""
-			self.config_adc(adc_num, 0, (ACALL, IN_BUFF), sensor_num)
+			return self.config_ads(ads_num, 0, (ACAL, IN_BUFF))
 
-	def set_pga_gain(self, pga_num, gain, sensor_num=-1):
+	def set_pga_gain(self, pga_num, gain):
 		"""
-		Convenience method that calls config_adc to set the PGA's gain
+		Convenience method that calls config_ads to set the PGA's gain
 		:param pga_num which PGA to do this to (1-6)
-		:param gain the desired gain value. If this is not one allowed by config_adc,
+		:param gain the desired gain value. If this is not one allowed by config_ads,
 			it will be rounded to the nearest allowed value
-		:param sensor_num the index of the sensor to send the command to.
-				The default value of -1 corresponds to sending the command to all the sensors	
 		"""
-		self.config_adc(pga_num, 2, gain, sensor_num)
+		return self.config_ads(pga_num, 2, gain)
 
-	def set_adc_channel(self, adc_num, channel, positive=True, sensor_num=-1):
+	def set_ads_channel(self, ads_num, channel, positive=True):
 		"""
-		Convenience method that calls config_adc to set the positive or negative channel number
-		:param adc_num which ADC to do this to (1-6)
+		Convenience method that calls config_ads to set the positive or negative channel number
+		:param ads_num which ads to do this to (1-6)
 		:param positive
 		:param channel the desired channel number (0-3)
 		:param positive flag that states whether to change the positive or negative channel
 			True changes the positive channel, false does the negative one
-		:param sensor_num the index of the sensor to send the command to.
-				The default value of -1 corresponds to sending the command to all the sensors	
 		"""
-		if pos:
-			self.config_adc(adc_num, 3, channel, sensor_num)
+		if positive:
+			return self.config_ads(ads_num, 3, channel)
 		else:
-			self.config_adc(adc_num, 4, channel, sensor_num)
+			return self.config_ads(ads_num, 4, channel)
 
-	def config_dac(self, channel, voltage, sensor_num=-1):
+	def ads_self_calibrate(self, ads_num):
+		"""
+		Convenience method that calls config_ads to self-calibrate the selected ADS
+		:param ads_num which ads to do this to (1-6)
+		"""
+		return self.config_ads(ads_num, 6, 0)
+
+	def ads_report_registers(self, ads_num):
+		"""
+		Reads the calibration registers of the ADS and reports the OFC and FSC registers 
+		:param ads_num which ads to do this to (1-6)
+		:return OFC register value, FSC register value
+			-1 for both if reading the response failed
+		"""
+		
+		if ads_num == -1:
+			for i in range(6):
+				ofc, fsc = self.ads_report_registers(i)
+			return ofc, fsc
+
+		resp = self.send_byte([0x30+ads_num+1,0x05,0x00], returnType='list')
+		ok = False
+		startIndex = 0
+		try:
+			startIndex = resp.index(0xAA)+1
+			ok = self.check_crc(resp[startIndex+6],resp[startIndex-1:startIndex+6],8)
+		except ValueError:
+			rospy.logwarn('Failed to report FSC and OSC registers')
+			return 2**25, 2**25
+
+		if ok:
+			ofc = self.to_int(resp[startIndex:startIndex+3],lsb_first=True)
+			#Check if ofc is negative and find 2's complement accordingly
+			if ofc >= 2**23:
+				ofc -= 2**24
+			fsc = self.to_int(resp[startIndex+3:startIndex+6],lsb_first=True)
+			return ofc, fsc
+		else:
+			rospy.logwarn('Failed to report FSC and OSC registers: Checksum failed')
+			return 2**25, 2**25
+
+	def config_dac(self, channel, voltage):
 		"""
 		Configure the DAC by setting the output voltage of a specified channel or powering off a channel
 		:param channel the channel to set the voltage of (int between 1 and 6, inclusive)
 		:param voltage the voltage to set the output of the selected channel to
 			input 0 to shut a channel off
-		:param sensor_num the index of the sensor to send the command to.
-			The default value of -1 corresponds to sending the bytes to all the sensors	
 		"""
 		
-		if channel < 1 or channel > 6:
-			rospy.logwarn('Invalid channel number. Input a number between 1 and 7, inclusive')
-			return
-
-		config = []
-		if voltage == 0:
-			config = [0x4, channel]
+		if channel == -1:
+			resp = ''
+			for i in range(6):
+				resp += self.config_dac(i, voltage)
+			return resp
 		else:
-			volts_bin = bin(voltage)[2:]
+			voltage = voltage * 0xFFF / 50
 
-			#Adjust the length to 12 bits
-			while len(volts_bin) < 12:
-				volts_bin = '0' + volts_bin
+			config = []
 
-			#Make the last byte negative to indicate the CRC4 should be added to that byte, not in an additional byte
-			config = [(4<<4) + channel, int(volts_bin[:8],2), -int(volts_bin[8:], 2)]
-		self.send_byte(config, sensor_num=sensor_num)
+			if channel < 0 or channel > 5:
+				print('Invalid channel number. Input a number between 1 and 7, inclusive')
+				return
 
-	def to_hex(self, num):
-		return "%x" % num
+			channel += 1
+			if voltage == 0:
+				config = [0x47, channel<<4, 0x00]
+			else:
+				volts_hex = self.toHex(voltage)
 
-	def send_byte(self, byte, response_length=0, sensor_num=-1):
+				#Adjust the length to 12 bits
+				while len(volts_hex) < 3:
+					volts_hex = '0' + volts_hex
+
+				config = [(4<<4) + channel, int(volts_hex[:1],16), int(volts_hex[1:], 16)]
+			return self.send_byte(config)
+
+	def turn_on_led(self, ledNum):
+		self.config_dac(ledNum, 0x666)
+	def turn_on_leds(self,ledNums):
+		for num in ledNums:
+			self.config_dac(num, 0x666)
+	def turn_on_leds_all(self):
+		for i in range(1,7):
+			self.config_dac(i,0x666)
+	def turn_off_led(self, ledNum):
+		self.config_dac(ledNum, 0)
+	def turn_off_leds(self,ledNums):
+		for num in ledNums:
+			self.config_dac(num, 0)
+	def turn_off_leds_all(self):
+		for i in range(1,7):
+			self.config_dac(i,0)
+
+	def toHex(self, num, padded=False):
+		"""
+		Convert to hex without the "0x" at the start or the random "L" at the end
+		"""
+		h = "%x" % num
+		if padded:
+			if len(h) % 2 != 0:
+				h = h + '0'
+			return h
+		else:
+			return h
+
+	def to_int(self, byte, lsb_first=False):
+		"""
+		Helper method to convert a list of bytes where the least significant byte is 
+		first or last into an int
+		:param byte the list of bytes to convert to an int
+		:param lsb_first True if the least significant byte of the number is listed first, False otherwise
+			Default is false, so Most Significant Byte is assumed to be first
+		"""
+		num = 0
+		sz = len(byte)
+
+		if lsb_first: #LSB is first
+			for i in range(sz):
+				num += (byte[i] << i*8)
+		else: #LSB is last
+			for i in range(sz):
+				num += (byte[sz - 1 - i] << i*8)
+
+		return num
+
+	def check_crc(self, crcval, p, n=32):
+	    """
+	    Check crc Checksum with 8 or 32 bits
+	    :param crc the n bit checksum as a list of bytes (ints) or an int
+	    :param p the list of bytes to compare to the checksum. (This is bytes 0 to 46 in the 53 byte sensor packet)
+	    :param polynomial the bit string of the crc polynomial to use
+	    	Default is 0x04C11DB7 which is what we use for n=32. For n=8, 0x07 is used
+	    :return True if the checksum matches, False otherwise
+	    """
+	    if type(p) == int:
+	    	p = self.toBytesList(self.toHex(p))
+	    if type(crcval) != int:
+	    	crcval = self.to_int(crcval)
+
+	    if n == 8:
+	    	checksum = crc.crc8(p, table=self.crc8_table)
+	    elif n == 32:
+	    	checksum = crc.crc32(p, table=self.crc32_table)
+
+	    return checksum == crcval
+
+	def send_byte(self, byte, returnType='string'):
 		"""
 		Send a byte command to the serial port wrapper and tell it how
 		many bytes to expect in response
 		:param byte the byte command to send (int list)
-		:param response_length the number of bytes expected to be returned by the sensor
-			Default is 0, no response from sensor 
-		:param sensor_num the index of the sensor to send the command to.
-			The default value of -1 corresponds to sending the byte to all the sensors	
 		"""
+		#Initiate service and send bytes
+		resp = self.get_service(self.commandProxy, byte).response
 
-		#Create message
-		cmd = ByteMsg()
-		cmd.num_bytes = response_length
-		cmd.sensor_num = sensor_num
-		cmd.byte_data = byte
+		#Parse response into nicer format
+		h = ''
+		regex = '\w+-\w+-[SF]'
+		if resp != []:
+			for num in resp:
+				h += self.toHex(num, padded=True)
+			h = h.decode('hex')
 
-		rospy.logwarn('Sending byte ' + str(byte) + ' to sensor ' + str(sensor_num) + ', expecting ' + str(response_length) + ' bytes in return.')
-		#Publish message
-		self.user_cmds.publish(cmd)
+			#Try to match regex
+			if regex != None:
+				match = re.findall(regex,h)
+				if match != []:
+					h = ''
+					count = 0
+					for string in match:
+						h += string + '. '
+						count += 1
+						if count % 4 == 0:
+							h += '\n'
+					if h[-1] != '\n':
+						h += '\n'
+		if returnType == 'string':
+			return h
+		else:
+			return [int(i) for i in resp]
+
+	def get_service(self, proxy, *args):
+		try:
+			return proxy(*args)
+		except rospy.ServiceException as exc:
+			rospy.logwarn('Service did not process request: ' + str(exc))
+			return None
 
 if __name__ == "__main__":
 	rospy.init_node('sensor_obj')
-	sense = Sensor(num_sensors=int(rospy.get_param("num_sensors")))
+	sense = Sensor()

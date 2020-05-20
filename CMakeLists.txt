@@ -52,12 +52,14 @@ add_message_files(
   FILES
   SensorOutput.msg
   FlagMsg.msg
+  ByteMsg.msg
 )
 
 ## Generate services in the 'srv' folder
 add_service_files(
   FILES
   SensorOutputRequest.srv
+  ByteSrv.srv
 )
 
 ## Generate actions in the 'action' folder

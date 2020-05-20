@@ -1,6 +1,10 @@
+float32[6] wrench
 float32[6] differential
+int32[6] differential_raw
 float32[6] sum
-float32[5] imu
+int32[6] sum_raw
+float32[4] imu
+float32[4] quaternion
+int8[6] saturated
+float32 temperature
 string report_id
-int32 checksum
-int32 sensor_num
